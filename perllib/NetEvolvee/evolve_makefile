@@ -1,0 +1,4 @@
+CFLAGS=-I $(NEURODIR)/include
+
+%.so: %.o
+	$(CC) -lm -shared -o $@ $<

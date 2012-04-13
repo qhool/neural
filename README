@@ -1,0 +1,6 @@
+Information about the contents of this CD, and the APIs in perllib/ and
+neural/ can be found in docs/thesis.(ps|pdf).  You'll need a gnu toolchain
+on some kind of unix to build this stuff.  Just edit the various Makefiles,
+and run 'make'. 
+
+This software is under the GNU GPL version 2, or at your option any later version of that license.

@@ -1,0 +1,270 @@
+#include <sys/time.h>
+#include <time.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <math.h>
+
+#include "neural.h"
+
+double sigmoid( double sum ) {
+  return 2 / ( 1 + exp( -sum ) ) - 1;
+}
+
+//derivative of sigmoid fn:
+double Dsigmoid( double sigmoid ) {
+  return 0.5 * ( 1 - sigmoid * sigmoid );
+}
+
+int _calc_net( int *inputs, int input_count,
+	      int *outputs, int output_count,
+	      double *weights, int weight_count,
+	      double *node_values, int node_count,
+	      int feedback_limit, double feedback_convergence ) {
+  
+  int i;
+  double old_value; //temp. store old value of node to see if feedback has settled
+  int feedback_changes; //count of nodes which change over 1 feedback cycle
+  
+  //state variables for each node
+  [% FOREACH id IN all %] {
+    double node_[% id %];
+  } [% END %];
+  //precalc variables for nodes in feedback loops:
+  [% FOREACH id IN feedbacks %]
+    double presum_[% id %];
+  [% END %];
+
+  if( input_count != [% input_count %] ) {
+    //decide on error handling
+    return -1;
+  }
+  if( output_count != [% output_count %] ) {
+    //error reporting here
+    return -1;
+  }
+  if( weight_count != [% weight_count %] ) {
+    return -1;
+  }
+  if( node_values != NULL && node_count != [% all_count %] ) {
+    return -1;
+  }
+
+  //load input values into input nodes
+  [% FOREACH id IN inputs %]
+    node_[% id %] = inputs[[% loop.index %]];
+  [% END %];
+
+  [% FOREACH set IN calc_sets %] {
+    [% IF set.feedback %] {
+
+      // BEGIN FEEDBACK GROUP
+      //pre-calculate external inputs for all nodes, before feedback loop:
+      [% FOREACH node IN set.nodes %] {
+	[% IF node.norm_in_count %] {
+	  presum_[% node.id %] = 0
+	    [%- FOREACH input IN node.in %]
+	    [% UNLESS input.in_fb_group %]
+	    + node_[% input.id %] * weights[[% input.weight_index %]]
+	    [% END %][% END %];
+	} [% END %];
+      } [% END %];
+      //now main feedback loop
+      //init change count:
+      for( i = 0; i < feedback_limit; i++ ) {
+	feedback_changes = 0;
+	[% FOREACH node IN set.nodes %] {
+	  old_value = node_[% node.id %];
+	  node_[% node.id %] =
+	    sigmoid( presum_[% node.id %] +
+		     [% FOREACH input IN node.in %]
+		     [% IF input.in_fb_group %]
+		     node_[% input.id %] * weights[[% input.weight_index %]] +
+		     [% END %][% END %] 0 );
+	  if( fabs( node_[% node.id %] - old_value ) > feedback_convergence ) {
+	    feedback_changes++;
+	  }
+	} [% END %];
+	if( !feedback_changes ) {
+	  //no node outputs have changed in this loop, so the region has stabilized
+	  break;
+	}
+      }
+      //printf( "FB: %d\n", i );
+      //END FEEDBACK GROUP
+
+    } [% ELSE %] {
+      [% FOREACH node IN set.nodes %] {
+	[% IF node.in_count %] {
+	  /* calculate weighted input for node [%+ node.id %] */
+	  node_[% node.id %] =
+	    sigmoid( [% FOREACH input IN node.in %]
+		     node_[% input.id %] * weights[[% input.weight_index %]]
+		     [%- UNLESS loop.last %]+[% END -%] 
+		     [% END %] );
+	} [% END %];
+      } [% END %];     
+    } [% END %];
+  } [% END %];
+
+  //put output values into output buffer:
+  [% FOREACH id IN outputs %]
+    //convert from continuous values back to +1/-1
+    outputs[[% loop.index %]] = ( (node_[% id %] > 0) ? 1 : -1 );
+  [% END %];
+  if( node_values != NULL ) {
+    //copy all the node values into the array:
+    [% FOREACH id IN all %]
+      node_values[[% loop.index %]] = node_[% id %];
+    [% END %];
+  }
+  return 0;
+}  
+
+//a random seed can be specified, if repeatability is desired
+int _setup_initial_weights( double *weights, int weight_count,
+			   unsigned int *seed, int make_seed ) {
+  struct timeval time;
+  pid_t my_pid;
+  unsigned int my_seed;
+
+  if( weight_count != [% weight_count %] ) {
+    return -1;
+  }
+
+  //setup random seed:
+  if( make_seed || seed == NULL ) {
+    gettimeofday( &time, (struct timezone *)NULL );
+    my_pid = getpid();
+    my_seed = time.tv_sec + time.tv_usec + my_pid;
+    if( seed != NULL ) {
+      *seed = my_seed;
+    }
+  } else {
+    my_seed = *seed;
+  }
+  srandom( my_seed );
+  
+  [% FOREACH set IN calc_sets %] {
+    [% FOREACH node IN set.nodes %] {
+      [% FOREACH input IN node.in %] {
+	[% IF input.random %] {
+	  weights[[% input.weight_index %]] = (double)random()/(double)(RAND_MAX/2);
+	} [% ELSE %] {
+	  weights[[% input.weight_index %]] = [% input.orig_weight %];
+	} [% END %];
+      } [% END %];
+    } [% END %];
+  } [% END %];
+}
+
+
+/* if correct_outputs is not NULL, training_level should be > 0 */
+void _train_net( double *weights, 
+		double *weight_changes, int weight_count,
+		double *node_values, int node_count,
+		int *correct_outputs, int output_count,
+		int feedback_limit, double feedback_convergence,
+		double training_level )
+{
+  int feedback_changes, i;
+  double old_err;
+  int training_sign = (training_level > 0) ? 1 : -1;
+
+  [% FOREACH id IN all %] {
+    double node_[% id %] = node_values[[% loop.index %]];
+    double err_[% id %] = 0;
+  } [% END %];
+  [% FOREACH id IN feedbacks %]
+    double presum_err_[% id %] = 0;
+  [% END %];
+
+  /*zero the weight changes*/
+  for( i=0; i<weight_count; i++ ) {
+    weight_changes[i] = 0;
+  }
+
+  if( correct_outputs != NULL ) { 
+    //output nodes get their error by comparing to correct inputs:
+    [% FOREACH id IN outputs %]
+      err_[% id %] = Dsigmoid( node_[% node.id %] ) * 
+      ( correct_outputs[[% loop.index %]] - node_[% id %] );
+    [% END %];
+  } else {
+    /*since no correct output, generate errors based on real outputs
+      -- if training_level is positive, we're rewarding the net, and
+      calculated corrects should match outputs in sign.
+      -- otherwise, calculated corrects should be opposite in sign */
+    [% FOREACH id IN outputs %]
+      err_[% id %] = Dsigmoid( node_[% node.id %] ) * 
+      ( training_sign * ((node_[% id %] > 0)? 1 : -1) - node_[% id %] );
+    [% END %];
+    training_level = fabs( training_level );
+  }
+
+  //work backwards through net to compute error for each node.
+  [% FOREACH set IN reverse_calc_sets %] {
+    [% IF set.feedback %] {
+      //BEGIN FEEDBACK GROUP:
+      [% FOREACH node IN set.nodes %] {
+	[% IF node.norm_out_count %] {
+	  presum_err_[% node.id %] = 0
+	    [% FOREACH output IN node.out %]
+	    [% UNLESS output.in_fb_group %]
+	    + node_[% output.id %] * weights[[% output.weight_index %]]
+	    [% END %][% END %];
+	} [% END %];
+      } [% END %];
+      for( i = 0; i < feedback_limit; i++ ) {
+	feedback_changes = 0;
+	[% FOREACH node IN set.nodes %] {
+	  [% UNLESS node.is_output_node %] {
+	    old_err = err_[% node.id %];
+	    //calculate err_ (delta) for current node:
+	    err_[% node.id %] = Dsigmoid( node_[% node.id %] ) *
+	      ( presum_err_[% node.id %] + [% FOREACH output IN node.out %]
+		[% IF output.in_fb_group %]
+		err_[% output.id %] * weights[[% output.weight_index %]] +
+		[% END %][% END %] 0 );
+	    if( fabs( err_[% node.id %] - old_err ) > feedback_convergence ) {
+	      feedback_changes++;
+	    }
+	  } [% END %];
+	} [% END %];
+	if( !feedback_changes ) {
+	  //error coefs have settled, no need to keep iterating
+	  break;
+	}
+      }
+      //printf( "TRNFB: %d\n",i );
+      //END FEEDBACK GROUP
+    } [% ELSE %] {
+      [% FOREACH node IN set.nodes %] {
+	[% UNLESS node.is_output_node %] {
+	  //calculate err_ (delta) for current node:
+	  err_[% node.id %] = Dsigmoid( node_[% node.id %] ) *
+	    ( [% FOREACH output IN node.out %] {
+	      err_[% output.id %] * weights[[% output.weight_index %]] +
+	    } [% END %] 0 );
+	} [% END %];
+      } [% END %];
+    } [% END %];
+  } [% END %];
+  //errors are computed, now calc weight changes:
+  [% FOREACH set IN reverse_calc_sets %] {
+    [% FOREACH node IN set.nodes %] {
+      [% FOREACH input IN node.in %] {
+	weight_changes[[% input.weight_index %]] =
+	  training_level * err_[% node.id %] * node_[% input.id %];
+      } [% END %];
+    } [% END %];
+  } [% END %];
+}
+
+void _net_info( struct net_info *info ) {
+  info->input_count = [% input_count %];
+  info->output_count = [% output_count %];
+  info->weight_count = [% weight_count %];
+  info->node_count = [% all_count %];
+  return;
+}

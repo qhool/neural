@@ -1,0 +1,38 @@
+#!/bin/sh
+
+#get just the script name from $0
+__SE_DZERO_SCRIPT=`echo $0 | sed 's/.*\///'`
+
+__append_pathvar() {
+    if [ -z ${!1} ]; then
+	export $1="$2"
+    else 
+	export $1="${!1}:$2"
+    fi
+}
+
+
+if [ 'setup_environment' = $__SE_DZERO_SCRIPT ]; then
+    echo "Usage: . $0";
+elif [ $__SE_ENVIRONMENT_SETUP -a $__SE_ENVIRONMENT_SETUP = "_SET_" ]; then
+    echo "setup_environment should only be used once.";
+else
+    __SE_OLD_DIR=`pwd`
+    if [ $BASH_SOURCE ]; then
+	cd `echo $BASH_SOURCE | sed 's/\/[^\/]*$/\//'`
+    fi
+    if [ ! -f ./setup_environment ]; then
+	echo "must run setup_environment from toplevel 'neuro' directory"
+    else  
+	__SE_ROOT_DIR=`pwd`
+	__append_pathvar PATH "$__SE_ROOT_DIR/bin"
+	__append_pathvar LD_LIBRARY_PATH "$__SE_ROOT_DIR/lib"
+	__append_pathvar PERL5LIB "$__SE_ROOT_DIR/perllib"
+	export __SE_ENVIRONMENT_SETUP="_SET_"
+	cd $__SE_OLD_DIR
+	unset __SE_OLD_DIR
+	unset __SE_ROOT_DIR
+    fi
+fi
+
+unset __SE_DZERO_SCRIPT

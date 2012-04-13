@@ -1,0 +1,20 @@
+use NetEvolvee;
+use Utility qw(progress_dots);
+
+
+return { load_individual => \&NetEvolvee::load,
+	 parents_per_individual => 2,
+	 average_over => 4,
+	 mutation_level => 5,
+	 select => \&NetEvolvee::select_n_best,
+	 kill => \&NetEvolvee::kill_worst,
+	 get_starting_population => sub {
+	   my $project_dir = shift;
+	   return NetEvolvee::population_explosion( 100, #pop size
+						    $project_dir,
+						    'binary_counter' );
+	 },
+	 introns => 0,
+	 recompile_genome => 0,
+	 remove_introns => 1,
+       };
